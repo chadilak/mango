@@ -680,6 +680,10 @@ struct ScrollerStackNode {
 struct TagScrollerState {
 	struct ScrollerStackNode *all_first; /* 所有节点的单链表头 */
 	int count;
+	int last_count; /* n_heads from the previous arrange pass, used to force
+					   a fresh anchor recompute when a window was added or
+					   removed, instead of leaving the root client's stale
+					   on-screen position untouched. */
 };
 
 typedef struct {

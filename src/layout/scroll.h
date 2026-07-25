@@ -330,6 +330,9 @@ void scroller(Monitor *m) {
 
 	m->visible_scroll_tiling_clients = n_heads;
 
+	bool structure_changed = (n_heads != st->last_count);
+	st->last_count = n_heads;
+
 	int32_t cur_gappih = enablegaps ? m->gappih : 0;
 	int32_t cur_gappoh = enablegaps ? m->gappoh : 0;
 	int32_t cur_gappov = enablegaps ? m->gappov : 0;
@@ -358,6 +361,34 @@ void scroller(Monitor *m) {
 		sync_scroller_state_to_clients(m, tag);
 		free(heads);
 		return;
+	}
+
+	/* See the matching comment in vertical_scroller(): if the whole
+	 * stack fits without scrolling, lay it out left-to-right
+	 * deterministically instead of anchoring off a root client. */
+	{
+		float total_proportion_sum = 0.0f;
+		for (int i = 0; i < n_heads; i++)
+			total_proportion_sum += heads[i]->scroller_proportion;
+		int32_t total_needed_width =
+			(int32_t)(total_proportion_sum * max_client_width) +
+			(n_heads - 1) * cur_gappih;
+
+		if (total_needed_width <= max_client_width) {
+			int32_t cur_x = m->w.x + config.scroller_structs;
+			for (int i = 0; i < n_heads; i++) {
+				struct wlr_box g;
+				g.height = m->w.height - 2 * cur_gappov;
+				g.width = max_client_width * heads[i]->scroller_proportion;
+				horizontal_scroll_adjust_fullandmax(heads[i]->client, &g);
+				g.y = m->w.y + (m->w.height - g.height) / 2;
+				g.x = cur_x;
+				arrange_stack_node(heads[i], g, cur_gappiv);
+				cur_x += g.width + cur_gappih;
+			}
+			sync_scroller_state_to_clients(m, tag);
+			return;
+		}
 	}
 
 	struct ScrollerStackNode *root_node = NULL;
@@ -393,7 +424,7 @@ void scroller(Monitor *m) {
 	bool over_overspread_to_left = false;
 	Client *root_client = root_node->client;
 
-	if (root_client->geom.x >= m->w.x + config.scroller_structs &&
+	if (!structure_changed && root_client->geom.x >= m->w.x + config.scroller_structs &&
 		root_client->geom.x + root_client->geom.width <=
 			m->w.x + m->w.width - config.scroller_structs) {
 		need_scroller = false;
@@ -476,8 +507,11 @@ void scroller(Monitor *m) {
 							  config.scroller_structs);
 			}
 		} else {
+			bool anchor_to_right = structure_changed
+				? (focus_index > (n_heads - 1) / 2.0)
+				: (root_client->geom.x > m->w.x + (m->w.width) / 2);
 			target_geom.x =
-				root_client->geom.x > m->w.x + (m->w.width) / 2
+				anchor_to_right
 					? m->w.x + (m->w.width -
 								heads[focus_index]->scroller_proportion *
 									max_client_width -
@@ -571,6 +605,9 @@ void vertical_scroller(Monitor *m) {
 
 	m->visible_scroll_tiling_clients = n_heads;
 
+	bool structure_changed = (n_heads != st->last_count);
+	st->last_count = n_heads;
+
 	int32_t cur_gappiv = enablegaps ? m->gappiv : 0;
 	int32_t cur_gappov = enablegaps ? m->gappov : 0;
 	int32_t cur_gappoh = enablegaps ? m->gappoh : 0;
@@ -580,6 +617,7 @@ void vertical_scroller(Monitor *m) {
 	}
 	int32_t max_client_height =
 		m->w.height - 2 * config.scroller_structs - cur_gappiv;
+
 
 	if (n_heads == 1 && !scroller_ignore_proportion_single &&
 		!heads[0]->client->isfullscreen &&
@@ -598,6 +636,42 @@ void vertical_scroller(Monitor *m) {
 		sync_scroller_state_to_clients(m, tag);
 		free(heads);
 		return;
+	}
+
+	/*
+	 * If the whole stack fits in the viewport without needing to scroll,
+	 * skip the anchor-and-expand-outward logic below entirely and just
+	 * lay every head out top-to-bottom deterministically. The anchor
+	 * logic exists to decide which subset of an overflowing stack to
+	 * show; when everything fits, picking a root and expanding both
+	 * directions from it is unnecessary and, since the root isn't
+	 * reliably the newest/most relevant client at arrange-time, can
+	 * anchor from the wrong position and push a window off-screen while
+	 * leaving an equivalent gap behind on the opposite edge.
+	 */
+	{
+		float total_proportion_sum = 0.0f;
+		for (int i = 0; i < n_heads; i++)
+			total_proportion_sum += heads[i]->scroller_proportion;
+		int32_t total_needed_height =
+			(int32_t)(total_proportion_sum * max_client_height) +
+			(n_heads - 1) * cur_gappiv;
+
+		if (total_needed_height <= max_client_height) {
+			int32_t cur_y = m->w.y + config.scroller_structs;
+			for (int i = 0; i < n_heads; i++) {
+				struct wlr_box g;
+				g.width = m->w.width - 2 * cur_gappoh;
+				g.height = max_client_height * heads[i]->scroller_proportion;
+				vertical_scroll_adjust_fullandmax(heads[i]->client, &g);
+				g.x = m->w.x + (m->w.width - g.width) / 2;
+				g.y = cur_y;
+				arrange_stack_vertical_node(heads[i], g, cur_gappih);
+				cur_y += g.height + cur_gappiv;
+			}
+			sync_scroller_state_to_clients(m, tag);
+			return;
+		}
 	}
 
 	struct ScrollerStackNode *root_node = NULL;
@@ -632,7 +706,7 @@ void vertical_scroller(Monitor *m) {
 	bool over_overspread_to_up = false;
 	Client *root_client = root_node->client;
 
-	if (root_client->geom.y >= m->w.y + config.scroller_structs &&
+	if (!structure_changed && root_client->geom.y >= m->w.y + config.scroller_structs &&
 		root_client->geom.y + root_client->geom.height <=
 			m->w.y + m->w.height - config.scroller_structs) {
 		need_scroller = false;
@@ -716,8 +790,20 @@ void vertical_scroller(Monitor *m) {
 							  config.scroller_structs);
 			}
 		} else {
+			/*
+			 * root_client->geom.y is only a meaningful "which edge was I
+			 * closer to" hint during normal focus navigation. Right after
+			 * a window was opened/closed (structure_changed), the newly
+			 * focused root may be a brand-new client whose geom is still
+			 * zero/stale, which picked the wrong edge and pushed the
+			 * whole stack off-screen. Use its position in the ordered
+			 * stack instead in that case.
+			 */
+			bool anchor_to_bottom = structure_changed
+				? (focus_index > (n_heads - 1) / 2.0)
+				: (root_client->geom.y > m->w.y + (m->w.height) / 2);
 			target_geom.y =
-				root_client->geom.y > m->w.y + (m->w.height) / 2
+				anchor_to_bottom
 					? m->w.y + (m->w.height -
 								heads[focus_index]->scroller_proportion *
 									max_client_height -
