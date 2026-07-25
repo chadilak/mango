@@ -1092,6 +1092,22 @@ void exchange_two_scroller_clients(Client *c1, Client *c2) {
 
 	client_swap_layout_properties(c1, c2);
 
+	/*
+	 * The scroller layout picks its arrange "root"/anchor from m->sel or
+	 * m->prevsel and uses that client's *stale* c->geom (its on-screen
+	 * position from before this swap) to decide whether a scroll is
+	 * needed and where to anchor the strip. Since only list order and
+	 * layout-fraction properties were swapped above, the exchanged
+	 * client still carries its old geom, so arrange anchors against a
+	 * position it no longer logically occupies, leaving a gap where it
+	 * used to be. Swapping geom here makes each client carry the screen
+	 * position its swap partner just vacated, so the very next arrange()
+	 * anchors correctly instead of using stale geometry.
+	 */
+	struct wlr_box tmp_geom = c1->geom;
+	c1->geom = c2->geom;
+	c2->geom = tmp_geom;
+
 	if (n1 && n2) {
 		struct ScrollerStackNode *head1 = n1;
 		while (head1->prev_in_stack)
