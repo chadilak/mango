@@ -5782,7 +5782,7 @@ static void move_two_client(Client *c, Client *target, int32_t dir) {
 	Monitor *m = c->mon;
 	const Layout *layout = m->pertag->ltidxs[m->pertag->curtag];
 
-	if (layout->id == SCROLLER) {
+	if (layout->id == SCROLLER || layout->id == VERTICAL_SCROLLER) {
 		exchange_two_scroller_clients(c, target);
 		return;
 	}
