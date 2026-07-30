@@ -374,7 +374,7 @@ void scroller(Monitor *m) {
 			(int32_t)(total_proportion_sum * max_client_width) +
 			(n_heads - 1) * cur_gappih;
 
-		if (total_needed_width <= max_client_width) {
+		if (structure_changed && total_needed_width <= max_client_width) {
 			int32_t cur_x = m->w.x + config.scroller_structs;
 			for (int i = 0; i < n_heads; i++) {
 				struct wlr_box g;
@@ -639,15 +639,24 @@ void vertical_scroller(Monitor *m) {
 	}
 
 	/*
-	 * If the whole stack fits in the viewport without needing to scroll,
-	 * skip the anchor-and-expand-outward logic below entirely and just
-	 * lay every head out top-to-bottom deterministically. The anchor
-	 * logic exists to decide which subset of an overflowing stack to
-	 * show; when everything fits, picking a root and expanding both
-	 * directions from it is unnecessary and, since the root isn't
-	 * reliably the newest/most relevant client at arrange-time, can
+	 * Right after a window was opened or closed, and only then: if the
+	 * whole stack now fits in the viewport without needing to scroll,
+	 * skip the anchor-and-expand-outward logic below and lay every head
+	 * out top-to-bottom deterministically instead. The anchor logic
+	 * exists to decide which subset of an overflowing stack to show;
+	 * when everything fits, picking a root and expanding both directions
+	 * from it is unnecessary and, since the root isn't reliably the
+	 * newest/most relevant client right after a structural change, can
 	 * anchor from the wrong position and push a window off-screen while
-	 * leaving an equivalent gap behind on the opposite edge.
+	 * leaving an equivalent gap on the opposite edge.
+	 *
+	 * Gating this on structure_changed matters: without it, this ran on
+	 * every single arrange (including ones triggered by an unrelated
+	 * resize/proportion change), unconditionally re-sending geometry to
+	 * every window on the tag every time, causing visible resize
+	 * flashing on clients that weren't actually being touched. Ordinary
+	 * resizes now fall through to the original cascade logic below,
+	 * unchanged from stock behavior.
 	 */
 	{
 		float total_proportion_sum = 0.0f;
@@ -657,7 +666,7 @@ void vertical_scroller(Monitor *m) {
 			(int32_t)(total_proportion_sum * max_client_height) +
 			(n_heads - 1) * cur_gappiv;
 
-		if (total_needed_height <= max_client_height) {
+		if (structure_changed && total_needed_height <= max_client_height) {
 			int32_t cur_y = m->w.y + config.scroller_structs;
 			for (int i = 0; i < n_heads; i++) {
 				struct wlr_box g;
@@ -1180,15 +1189,24 @@ void exchange_two_scroller_clients(Client *c1, Client *c2) {
 	 * position from before this swap) to decide whether a scroll is
 	 * needed and where to anchor the strip. Since only list order and
 	 * layout-fraction properties were swapped above, the exchanged
-	 * client still carries its old geom, so arrange anchors against a
-	 * position it no longer logically occupies, leaving a gap where it
-	 * used to be. Swapping geom here makes each client carry the screen
-	 * position its swap partner just vacated, so the very next arrange()
-	 * anchors correctly instead of using stale geometry.
+	 * client still carries its old position, so arrange anchors against
+	 * a position it no longer logically occupies, leaving a gap where it
+	 * used to be. Swapping position here makes each client carry the
+	 * screen position its swap partner just vacated, so the very next
+	 * arrange() anchors correctly instead of using stale geometry.
+	 *
+	 * Only x/y are swapped, deliberately NOT width/height: each client's
+	 * size is governed by its own scroller_proportion and must not
+	 * change here. Swapping the whole box briefly gave a client its
+	 * swap partner's size (when the two differ) right before the next
+	 * arrange() corrected it, which is a real, client-visible resize
+	 * (that's what caused kitty's resize HUD to flash during exchange).
 	 */
-	struct wlr_box tmp_geom = c1->geom;
-	c1->geom = c2->geom;
-	c2->geom = tmp_geom;
+	int32_t tmp_x = c1->geom.x, tmp_y = c1->geom.y;
+	c1->geom.x = c2->geom.x;
+	c1->geom.y = c2->geom.y;
+	c2->geom.x = tmp_x;
+	c2->geom.y = tmp_y;
 
 	if (n1 && n2) {
 		struct ScrollerStackNode *head1 = n1;
