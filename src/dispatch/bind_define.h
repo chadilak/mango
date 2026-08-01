@@ -1805,6 +1805,70 @@ void tagcrossmon(const Arg *arg) {
 	return;
 }
 
+/*
+ * Like tagcrossmon, but never follows the moved client -- neither by
+ * switching the view to its new tag nor by moving focus to it. Mirrors
+ * tagsilent's behavior (which already does this for same-monitor
+ * retagging) for the cross-monitor case, which tagmon (and so
+ * tagcrossmon, which falls back to it) doesn't offer.
+ */
+void tagcrossmonsilent(const Arg *arg) {
+	if (!selmon)
+		return;
+
+	Client *c = arg->tc ? arg->tc : selmon->sel;
+	if (!c)
+		return;
+
+	if (match_monitor_spec(arg->v, selmon)) {
+		Arg a = {.ui = arg->ui, .tc = c};
+		tagsilent(&a);
+		return;
+	}
+
+	Monitor *m = NULL, *cm = NULL, *oldmon = c->mon;
+
+	wl_list_for_each(cm, &mons, link) {
+		if (!cm->wlr_output->enabled)
+			continue;
+		if (match_monitor_spec(arg->v, cm)) {
+			m = cm;
+			break;
+		}
+	}
+
+	if (!m || !m->wlr_output->enabled)
+		return;
+
+	uint32_t newtags = arg->ui ? arg->ui : arg->i2 ? c->tags : 0;
+
+	if (c == oldmon->sel)
+		oldmon->sel = NULL;
+
+	setmon(c, m, newtags, true);
+	client_update_oldmonname_record(c, m);
+	reset_foreign_tolevel(c, oldmon, c->mon);
+
+	c->float_geom.width =
+		(int32_t)(c->float_geom.width * c->mon->w.width / oldmon->w.width);
+	c->float_geom.height =
+		(int32_t)(c->float_geom.height * c->mon->w.height / oldmon->w.height);
+	c->float_geom = setclient_coordinate_center(c, c->mon, c->float_geom, 0, 0);
+
+	if (c->isfloating) {
+		c->geom = c->float_geom;
+		resize(c, c->geom, 1);
+	}
+
+	/* No view()/focusclient(c, 1)/selmon reassignment and no
+	 * warp_cursor_to_selmon -- that's the whole point: stay put on the
+	 * current monitor/tag, keep whatever was already focused there. */
+	focusclient(focustop(selmon), 1);
+	arrange(oldmon, false, false);
+	arrange(m, false, false);
+	return;
+}
+
 void comboview(const Arg *arg) {
 	uint32_t newtags = arg->ui & TAGMASK;
 

@@ -1354,6 +1354,10 @@ FuncType parse_func_name(char *func_name, Arg *arg, char *arg_value,
 		func = tagcrossmon;
 		(*arg).ui = parse_tag_mask(arg_value);
 		(*arg).v = strdup(arg_value2);
+	} else if (strcmp(func_name, "tagcrossmonsilent") == 0) {
+		func = tagcrossmonsilent;
+		(*arg).ui = parse_tag_mask(arg_value);
+		(*arg).v = strdup(arg_value2);
 	} else if (strcmp(func_name, "toggletag") == 0) {
 		func = toggletag;
 		(*arg).ui = parse_tag_mask(arg_value);
