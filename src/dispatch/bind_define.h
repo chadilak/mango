@@ -1339,10 +1339,19 @@ void tagmon(const Arg *arg) {
 
 	reset_foreign_tolevel(c, oldmon, c->mon);
 
-	c->float_geom.width =
-		(int32_t)(c->float_geom.width * c->mon->w.width / oldmon->w.width);
-	c->float_geom.height =
-		(int32_t)(c->float_geom.height * c->mon->w.height / oldmon->w.height);
+	/*
+	 * Rescaling by a per-move factor (whether independent per-axis
+	 * ratios or a uniform min() of the two) compounds every time a
+	 * window moves between monitors of different aspect ratios: there's
+	 * no direction where it grows back, so repeated moves shrink it a
+	 * little further each time. Keep the window's absolute size instead,
+	 * and only shrink it if it's literally larger than the new monitor's
+	 * work area -- a stable, non-compounding fix.
+	 */
+	if (c->float_geom.width > c->mon->w.width)
+		c->float_geom.width = c->mon->w.width;
+	if (c->float_geom.height > c->mon->w.height)
+		c->float_geom.height = c->mon->w.height;
 	selmon = c->mon;
 	c->float_geom = setclient_coordinate_center(c, c->mon, c->float_geom, 0, 0);
 
@@ -1834,10 +1843,13 @@ void tagcrossmonsilent(const Arg *arg) {
 	client_update_oldmonname_record(c, m);
 	reset_foreign_tolevel(c, oldmon, c->mon);
 
-	c->float_geom.width =
-		(int32_t)(c->float_geom.width * c->mon->w.width / oldmon->w.width);
-	c->float_geom.height =
-		(int32_t)(c->float_geom.height * c->mon->w.height / oldmon->w.height);
+	/* See the matching comment in tagmon() for why this clamps rather
+	 * than rescales -- a per-move scale factor compounds on repeated
+	 * moves between differently-shaped monitors. */
+	if (c->float_geom.width > c->mon->w.width)
+		c->float_geom.width = c->mon->w.width;
+	if (c->float_geom.height > c->mon->w.height)
+		c->float_geom.height = c->mon->w.height;
 	c->float_geom = setclient_coordinate_center(c, c->mon, c->float_geom, 0, 0);
 
 	if (c->isfloating) {
