@@ -783,6 +783,13 @@ void set_proportion(const Arg *arg) {
 	if (st)
 		node = find_scroller_node(st, tc);
 
+	/* No-op if the window is already at this proportion; a redundant
+	 * arrange() reconfigure every scroller client at an unchanged size,
+	 * glitching/refreshing the surface for no geometry change. */
+	float current = node ? node->scroller_proportion : tc->scroller_proportion;
+	if (fabsf(current - arg->f) < 0.0001f)
+		return;
+
 	if (node)
 		node->scroller_proportion = arg->f;
 	tc->scroller_proportion = arg->f;
@@ -852,6 +859,10 @@ void switch_proportion_preset(const Arg *arg) {
 
 	if (target_proportion == 0.0f)
 		target_proportion = config.scroller_proportion_preset[0];
+
+	float current = node ? node->scroller_proportion : tc->scroller_proportion;
+	if (fabsf(current - target_proportion) < 0.0001f)
+		return;
 
 	if (node)
 		node->scroller_proportion = target_proportion;
