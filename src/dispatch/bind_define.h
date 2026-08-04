@@ -865,6 +865,7 @@ void switch_proportion_preset(const Arg *arg) {
 	if (target_proportion == 0.0f)
 		target_proportion = config.scroller_proportion_preset[0];
 
+	float current = node ? node->scroller_proportion : tc->scroller_proportion;
 	if (fabsf(current - target_proportion) < 0.0001f)
 	    return;
 
