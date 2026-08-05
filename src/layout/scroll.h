@@ -279,6 +279,80 @@ void arrange_stack_vertical_node(struct ScrollerStackNode *head,
 	}
 }
 
+/*
+ * Shared "everything still fits" fast path for scroller() and
+ * vertical_scroller().
+ *
+ * Right after a window was opened or closed, and only then: if the whole
+ * stack now fits in the viewport without needing to scroll, skip the
+ * anchor-and-expand-outward logic below and lay every head out
+ * deterministically from the leading edge instead. The anchor logic exists
+ * to decide which subset of an overflowing stack to show; when everything
+ * fits, picking a root and expanding both directions from it is unnecessary
+ * and, since the root isn't reliably the newest/most relevant client right
+ * after a structural change, can anchor from the wrong position and push a
+ * window off-screen while leaving an equivalent gap on the opposite edge.
+ *
+ * Gating this on structure_changed matters: without it, this ran on every
+ * single arrange (including ones triggered by an unrelated resize/proportion
+ * change), unconditionally re-sending geometry to every window on the tag
+ * every time, causing visible resize flashing on clients that weren't
+ * actually being touched. Ordinary resizes now fall through to the original
+ * cascade logic below, unchanged from stock behavior.
+ *
+ * Returns true if it laid out every head (caller returns immediately),
+ * false if the stack still needs the anchor/scroll handling.
+ *
+ * `horizontal` selects the axis: heads grow left-to-right (horizontal
+ * scroller, widths governed by max_client_width) or top-to-bottom (vertical
+ * scroller, heights governed by max_client_height). `adjust_fullandmax` and
+ * `arrange` are the axis-specific fullscreen/maximize normalizer and the
+ * per-head stack arranger. `box_outer_perp` is the outer gap subtracted once
+ * from each edge of the cross-axis extent, `axis_gap` the gap between layout
+ * slots along the growth axis, and `stack_gap` the inner gap the arranger
+ * spreads across each head's own stack.
+ */
+static bool scroller_layout_all_heads_if_fits(
+	Monitor *m, uint32_t tag, struct ScrollerStackNode **heads, int32_t n_heads,
+	bool structure_changed, bool horizontal, int32_t max_client_axis,
+	int32_t box_outer_perp, int32_t axis_gap, int32_t stack_gap,
+	void (*adjust_fullandmax)(Client *, struct wlr_box *),
+	void (*arrange)(struct ScrollerStackNode *, struct wlr_box, int32_t)) {
+	float total_proportion_sum = 0.0f;
+	for (int i = 0; i < n_heads; i++)
+		total_proportion_sum += heads[i]->scroller_proportion;
+	int32_t total_needed =
+		(int32_t)(total_proportion_sum * max_client_axis) +
+		(n_heads - 1) * axis_gap;
+
+	if (!structure_changed || total_needed > max_client_axis)
+		return false;
+
+	int32_t cur = (horizontal ? m->w.x : m->w.y) + config.scroller_structs;
+	for (int i = 0; i < n_heads; i++) {
+		struct wlr_box g;
+		if (horizontal) {
+			g.height = m->w.height - 2 * box_outer_perp;
+			g.width = max_client_axis * heads[i]->scroller_proportion;
+			adjust_fullandmax(heads[i]->client, &g);
+			g.y = m->w.y + (m->w.height - g.height) / 2;
+			g.x = cur;
+			arrange(heads[i], g, stack_gap);
+			cur += g.width + axis_gap;
+		} else {
+			g.width = m->w.width - 2 * box_outer_perp;
+			g.height = max_client_axis * heads[i]->scroller_proportion;
+			adjust_fullandmax(heads[i]->client, &g);
+			g.x = m->w.x + (m->w.width - g.width) / 2;
+			g.y = cur;
+			arrange(heads[i], g, stack_gap);
+			cur += g.height + axis_gap;
+		}
+	}
+	sync_scroller_state_to_clients(m, tag);
+	return true;
+}
+
 void scroller(Monitor *m) {
 	uint32_t tag = m->pertag->curtag;
 	struct TagScrollerState *st = ensure_scroller_state(m, tag);
@@ -366,29 +440,11 @@ void scroller(Monitor *m) {
 	/* See the matching comment in vertical_scroller(): if the whole
 	 * stack fits without scrolling, lay it out left-to-right
 	 * deterministically instead of anchoring off a root client. */
-	{
-		float total_proportion_sum = 0.0f;
-		for (int i = 0; i < n_heads; i++)
-			total_proportion_sum += heads[i]->scroller_proportion;
-		int32_t total_needed_width =
-			(int32_t)(total_proportion_sum * max_client_width) +
-			(n_heads - 1) * cur_gappih;
-
-		if (structure_changed && total_needed_width <= max_client_width) {
-			int32_t cur_x = m->w.x + config.scroller_structs;
-			for (int i = 0; i < n_heads; i++) {
-				struct wlr_box g;
-				g.height = m->w.height - 2 * cur_gappov;
-				g.width = max_client_width * heads[i]->scroller_proportion;
-				horizontal_scroll_adjust_fullandmax(heads[i]->client, &g);
-				g.y = m->w.y + (m->w.height - g.height) / 2;
-				g.x = cur_x;
-				arrange_stack_node(heads[i], g, cur_gappiv);
-				cur_x += g.width + cur_gappih;
-			}
-			sync_scroller_state_to_clients(m, tag);
-			return;
-		}
+	if (scroller_layout_all_heads_if_fits(
+			m, tag, heads, n_heads, structure_changed, true, max_client_width,
+			cur_gappov, cur_gappih, cur_gappiv, horizontal_scroll_adjust_fullandmax,
+			arrange_stack_node)) {
+		return;
 	}
 
 	struct ScrollerStackNode *root_node = NULL;
@@ -639,48 +695,15 @@ void vertical_scroller(Monitor *m) {
 	}
 
 	/*
-	 * Right after a window was opened or closed, and only then: if the
-	 * whole stack now fits in the viewport without needing to scroll,
-	 * skip the anchor-and-expand-outward logic below and lay every head
-	 * out top-to-bottom deterministically instead. The anchor logic
-	 * exists to decide which subset of an overflowing stack to show;
-	 * when everything fits, picking a root and expanding both directions
-	 * from it is unnecessary and, since the root isn't reliably the
-	 * newest/most relevant client right after a structural change, can
-	 * anchor from the wrong position and push a window off-screen while
-	 * leaving an equivalent gap on the opposite edge.
-	 *
-	 * Gating this on structure_changed matters: without it, this ran on
-	 * every single arrange (including ones triggered by an unrelated
-	 * resize/proportion change), unconditionally re-sending geometry to
-	 * every window on the tag every time, causing visible resize
-	 * flashing on clients that weren't actually being touched. Ordinary
-	 * resizes now fall through to the original cascade logic below,
-	 * unchanged from stock behavior.
+	 * See scroller_layout_all_heads_if_fits() above for the full rationale:
+	 * right after a structural change, if the whole stack now fits, lay all
+	 * heads out top-to-bottom deterministically and skip the anchor logic.
 	 */
-	{
-		float total_proportion_sum = 0.0f;
-		for (int i = 0; i < n_heads; i++)
-			total_proportion_sum += heads[i]->scroller_proportion;
-		int32_t total_needed_height =
-			(int32_t)(total_proportion_sum * max_client_height) +
-			(n_heads - 1) * cur_gappiv;
-
-		if (structure_changed && total_needed_height <= max_client_height) {
-			int32_t cur_y = m->w.y + config.scroller_structs;
-			for (int i = 0; i < n_heads; i++) {
-				struct wlr_box g;
-				g.width = m->w.width - 2 * cur_gappoh;
-				g.height = max_client_height * heads[i]->scroller_proportion;
-				vertical_scroll_adjust_fullandmax(heads[i]->client, &g);
-				g.x = m->w.x + (m->w.width - g.width) / 2;
-				g.y = cur_y;
-				arrange_stack_vertical_node(heads[i], g, cur_gappih);
-				cur_y += g.height + cur_gappiv;
-			}
-			sync_scroller_state_to_clients(m, tag);
-			return;
-		}
+	if (scroller_layout_all_heads_if_fits(
+			m, tag, heads, n_heads, structure_changed, false, max_client_height,
+			cur_gappoh, cur_gappiv, cur_gappih, vertical_scroll_adjust_fullandmax,
+			arrange_stack_vertical_node)) {
+		return;
 	}
 
 	struct ScrollerStackNode *root_node = NULL;
@@ -1201,12 +1224,22 @@ void exchange_two_scroller_clients(Client *c1, Client *c2) {
 	 * swap partner's size (when the two differ) right before the next
 	 * arrange() corrected it, which is a real, client-visible resize
 	 * (that's what caused kitty's resize HUD to flash during exchange).
+	 *
+	 * The swap is only meaningful within a single monitor's coordinate
+	 * space, where the anchor reads the "current position" to decide the
+	 * layout direction. Across monitors the two geom.x/y are expressed in
+	 * different, unrelated coordinates, so blindly swapping them would seed
+	 * the arrange anchor of each monitor with the other's absolute offset.
+	 * The subsequent arrange() recomputes box geometry anyway, so nothing
+	 * is lost by skipping the swap for the cross-monitor case.
 	 */
-	int32_t tmp_x = c1->geom.x, tmp_y = c1->geom.y;
-	c1->geom.x = c2->geom.x;
-	c1->geom.y = c2->geom.y;
-	c2->geom.x = tmp_x;
-	c2->geom.y = tmp_y;
+	if (m1 == m2) {
+		int32_t tmp_x = c1->geom.x, tmp_y = c1->geom.y;
+		c1->geom.x = c2->geom.x;
+		c1->geom.y = c2->geom.y;
+		c2->geom.x = tmp_x;
+		c2->geom.y = tmp_y;
+	}
 
 	if (n1 && n2) {
 		struct ScrollerStackNode *head1 = n1;
