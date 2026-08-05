@@ -62,6 +62,8 @@ typedef struct {
 typedef struct {
 	const char *id;
 	const char *title;
+	pcre2_code *id_re;
+	pcre2_code *title_re;
 	uint32_t tags;
 	int32_t isfloating;
 	int32_t isfullscreen;
@@ -401,6 +403,7 @@ typedef struct {
 
 	ConfigWinRule *window_rules;
 	int32_t window_rules_count;
+	bool has_opacity_window_rule;
 
 	ConfigMonitorRule *monitor_rules; // 动态数组
 	int32_t monitor_rules_count;	  // 条数
@@ -2733,6 +2736,11 @@ bool parse_option(Config *config, char *key, char *value, int line_number) {
 			}
 			token = strtok(NULL, ",");
 		}
+		rule->id_re = rule->id ? regex_compile(rule->id) : NULL;
+		rule->title_re = rule->title ? regex_compile(rule->title) : NULL;
+		if (rule->focused_opacity > 0.0f || rule->unfocused_opacity > 0.0f) {
+			config->has_opacity_window_rule = true;
+		}
 		config->window_rules_count++;
 		return !parse_error;
 	} else if (strncmp(key, "env", 3) == 0) {
@@ -3655,6 +3663,14 @@ void free_config(void) {
 	if (config.window_rules) {
 		for (int32_t i = 0; i < config.window_rules_count; i++) {
 			ConfigWinRule *rule = &config.window_rules[i];
+			if (rule->id_re) {
+				pcre2_code_free(rule->id_re);
+				rule->id_re = NULL;
+			}
+			if (rule->title_re) {
+				pcre2_code_free(rule->title_re);
+				rule->title_re = NULL;
+			}
 			if (rule->id)
 				free((void *)rule->id);
 			if (rule->title)

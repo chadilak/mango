@@ -136,10 +136,18 @@ setclient_coordinate_center(Client *c, Monitor *tm, struct wlr_box geom,
 /* Helper: Check if rule matches client */
 static bool is_window_rule_matches(const ConfigWinRule *r, const char *appid,
 								   const char *title) {
-	return (r->title && regex_match(r->title, title) && !r->id) ||
-		   (r->id && regex_match(r->id, appid) && !r->title) ||
-		   (r->id && regex_match(r->id, appid) && r->title &&
-			regex_match(r->title, title));
+	return (r->title &&
+			(r->title_re ? regex_match_compiled(r->title_re, title)
+						 : regex_match(r->title, title)) &&
+			!r->id) ||
+		   (r->id && (r->id_re ? regex_match_compiled(r->id_re, appid)
+							   : regex_match(r->id, appid)) &&
+			!r->title) ||
+		   (r->id && (r->id_re ? regex_match_compiled(r->id_re, appid)
+							   : regex_match(r->id, appid)) &&
+			r->title &&
+			(r->title_re ? regex_match_compiled(r->title_re, title)
+						 : regex_match(r->title, title)));
 }
 
 Client *center_tiled_select(Monitor *m) {

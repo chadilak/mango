@@ -1684,6 +1684,120 @@ static void apply_rule_properties(Client *c, const ConfigWinRule *r) {
 	APPLY_STRING_PROP(c, r, animation_type_close);
 }
 
+void reapply_opacity_rules(Client *c) {
+	if (!c || !config.has_opacity_window_rule)
+		return;
+
+	/* set_title can fire before mapnotify creates the border/scene, and
+	 * unmanaged clients never get one; skip until the client is fully
+	 * set up, since applyrules() at map time handles it then */
+	if (!c->border || !c->mon)
+		return;
+
+	const char *appid, *title;
+	appid = client_get_appid(c);
+	title = client_get_title(c);
+	if (!appid)
+		appid = broken;
+	if (!title)
+		title = broken;
+
+	float prev_focused = c->focused_opacity;
+	float prev_unfocused = c->unfocused_opacity;
+
+	c->focused_opacity = config.focused_opacity;
+	c->unfocused_opacity = config.unfocused_opacity;
+
+	for (uint32_t i = 0; i < config.window_rules_count; i++) {
+		const ConfigWinRule *r = &config.window_rules[i];
+		if (!is_window_rule_matches(r, appid, title))
+			continue;
+		if (r->focused_opacity > 0.0f)
+			c->focused_opacity = r->focused_opacity;
+		if (r->unfocused_opacity > 0.0f)
+			c->unfocused_opacity = r->unfocused_opacity;
+	}
+
+	if (c->focused_opacity == prev_focused &&
+		c->unfocused_opacity == prev_unfocused)
+		return;
+
+	bool focused = (c == selmon->sel);
+	if (config.animations) {
+		if (focused)
+			client_set_focused_opacity_animation(c);
+		else
+			client_set_unfocused_opacity_animation(c);
+		request_fresh_all_monitors();
+	} else {
+		client_set_opacity(c, focused ? c->focused_opacity
+									  : c->unfocused_opacity);
+	}
+	printstatus(IPC_WATCH_ARRANGGE);
+}
+
+/* Re-apply floating/geometry window rules when the title changes after
+ * mapping (e.g. a browser extension popup that adopts a recognizable title
+ * only after it opens). Only flips the window into floating and applies the
+ * rule's custom size; it never forces a window back to tiled. */
+void reapply_float_rules(Client *c) {
+	if (!c || c->iskilling || !c->mon || !c->border ||
+		!client_surface(c)->mapped)
+		return;
+
+	const char *appid, *title;
+	appid = client_get_appid(c);
+	title = client_get_title(c);
+	if (!appid)
+		appid = broken;
+	if (!title)
+		title = broken;
+
+	bool want_floating = false;
+	struct wlr_box float_geom = {0};
+	bool want_size = false;
+
+	for (uint32_t i = 0; i < config.window_rules_count; i++) {
+		const ConfigWinRule *r = &config.window_rules[i];
+		if (!is_window_rule_matches(r, appid, title))
+			continue;
+
+		if (r->isfloating == 1)
+			want_floating = true;
+
+		if (r->width > 1)
+			float_geom.width = r->width;
+		else if (r->width > 0 && r->width <= 1)
+			float_geom.width = round(c->mon->m.width * r->width);
+		if (r->height > 1)
+			float_geom.height = r->height;
+		else if (r->height > 0 && r->height <= 1)
+			float_geom.height = round(c->mon->m.height * r->height);
+		if (r->width > 0 || r->height > 0)
+			want_size = true;
+	}
+
+	if (!want_floating && !want_size)
+		return;
+
+	if (want_size) {
+		if (float_geom.width > 0)
+			c->float_geom.width = float_geom.width;
+		if (float_geom.height > 0)
+			c->float_geom.height = float_geom.height;
+	}
+
+	if (want_floating && !c->isfloating) {
+		setfloating(c, 1);
+	} else if (want_size) {
+		/* keep current floating state, just apply the requested size */
+		c->geom = c->float_geom;
+		resize(c, c->float_geom, 0);
+		arrange(c->mon, false, false);
+		printstatus(IPC_WATCH_ARRANGGE);
+	}
+}
+
 void set_float_malposition(Client *tc) {
 	Client *c = NULL;
 	int32_t x, y, offset, xreverse, yreverse;
@@ -4515,10 +4629,21 @@ bool keypressglobal(struct wlr_surface *last_surface,
 					appid = client_get_appid(c);
 					title = client_get_title(c);
 
-					if ((r->title && regex_match(r->title, title) && !r->id) ||
-						(r->id && regex_match(r->id, appid) && !r->title) ||
-						(r->id && regex_match(r->id, appid) && r->title &&
-						 regex_match(r->title, title))) {
+					if ((r->title &&
+						 (r->title_re ? regex_match_compiled(r->title_re, title)
+									  : regex_match(r->title, title)) &&
+						 !r->id) ||
+						(r->id &&
+						 (r->id_re ? regex_match_compiled(r->id_re, appid)
+								   : regex_match(r->id, appid)) &&
+						 !r->title) ||
+						(r->id &&
+						 (r->id_re ? regex_match_compiled(r->id_re, appid)
+								   : regex_match(r->id, appid)) &&
+						 r->title &&
+						 (r->title_re
+							  ? regex_match_compiled(r->title_re, title)
+							  : regex_match(r->title, title)))) {
 						reset = true;
 						wlr_seat_keyboard_enter(seat, client_surface(c),
 												keycodes, 0,
@@ -7314,6 +7439,8 @@ void updatetitle(struct wl_listener *listener, void *data) {
 				.app_id = c->ext_foreign_toplevel->app_id,
 			});
 	}
+	reapply_opacity_rules(c);
+	reapply_float_rules(c);
 	if (c == focustop(c->mon))
 		printstatus(IPC_WATCH_ARRANGGE);
 }
