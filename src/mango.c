@@ -445,6 +445,7 @@ struct Client {
 	int32_t iskilling;
 	int32_t istagswitching;
 	int32_t isnamedscratchpad;
+	int32_t isobserved;
 	int32_t shield_when_capture;
 	bool is_pending_open_animation;
 	bool is_restoring_from_ov;
@@ -1672,6 +1673,7 @@ static void apply_rule_properties(Client *c, const ConfigWinRule *r) {
 	APPLY_INT_PROP(c, r, isunglobal);
 	APPLY_INT_PROP(c, r, noblur);
 	APPLY_INT_PROP(c, r, allow_shortcuts_inhibit);
+	APPLY_INT_PROP(c, r, isobserved);
 
 	APPLY_FLOAT_PROP(c, r, scroller_proportion);
 	APPLY_FLOAT_PROP(c, r, scroller_proportion_single);
@@ -1683,7 +1685,7 @@ static void apply_rule_properties(Client *c, const ConfigWinRule *r) {
 }
 
 void reapply_opacity_rules(Client *c) {
-	if (!c || !config.has_opacity_window_rule)
+	if (!c || !config.has_observed_window_rule)
 		return;
 
 	/* set_title can fire before mapnotify creates the border/scene, and
@@ -1708,7 +1710,8 @@ void reapply_opacity_rules(Client *c) {
 
 	for (uint32_t i = 0; i < config.window_rules_count; i++) {
 		const ConfigWinRule *r = &config.window_rules[i];
-		if (!is_window_rule_matches(r, appid, title))
+		if (!is_window_rule_matches(r, appid, title) ||
+			r->isobserved != 1)
 			continue;
 		if (r->focused_opacity > 0.0f)
 			c->focused_opacity = r->focused_opacity;
@@ -1740,7 +1743,7 @@ void reapply_opacity_rules(Client *c) {
  * rule's custom size; it never forces a window back to tiled. */
 void reapply_float_rules(Client *c) {
 	if (!c || c->iskilling || !c->mon || !c->border ||
-		!client_surface(c)->mapped)
+		!client_surface(c)->mapped || !config.has_observed_window_rule)
 		return;
 
 	const char *appid, *title;
@@ -1757,7 +1760,8 @@ void reapply_float_rules(Client *c) {
 
 	for (uint32_t i = 0; i < config.window_rules_count; i++) {
 		const ConfigWinRule *r = &config.window_rules[i];
-		if (!is_window_rule_matches(r, appid, title))
+		if (!is_window_rule_matches(r, appid, title) ||
+			r->isobserved != 1)
 			continue;
 
 		if (r->isfloating == 1)
@@ -4908,6 +4912,7 @@ void init_client_properties(Client *c) {
 	c->isunglobal = 0;
 	c->is_in_scratchpad = 0;
 	c->isnamedscratchpad = 0;
+	c->isobserved = 0;
 	c->is_scratchpad_show = 0;
 	c->need_float_size_reduce = 0;
 	c->is_clip_to_hide = 0;
