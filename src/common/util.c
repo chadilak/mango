@@ -50,12 +50,12 @@ int32_t fd_set_nonblock(int32_t fd) {
 	return 0;
 }
 
-int32_t regex_match(const char *pattern, const char *str) {
+pcre2_code *regex_compile(const char *pattern) {
 	int32_t errnum;
 	PCRE2_SIZE erroffset;
 
-	if (!pattern || !str) {
-		return 0;
+	if (!pattern) {
+		return NULL;
 	}
 
 	pcre2_code *re = pcre2_compile((PCRE2_SPTR)pattern, PCRE2_ZERO_TERMINATED,
@@ -65,6 +65,14 @@ int32_t regex_match(const char *pattern, const char *str) {
 		PCRE2_UCHAR errbuf[256];
 		pcre2_get_error_message(errnum, errbuf, sizeof(errbuf));
 		fprintf(stderr, "PCRE2 error: %s at offset %zu\n", errbuf, erroffset);
+		return NULL;
+	}
+
+	return re;
+}
+
+int32_t regex_match_compiled(pcre2_code *re, const char *str) {
+	if (!re || !str) {
 		return 0;
 	}
 
@@ -74,8 +82,18 @@ int32_t regex_match(const char *pattern, const char *str) {
 		pcre2_match(re, (PCRE2_SPTR)str, strlen(str), 0, 0, match_data, NULL);
 
 	pcre2_match_data_free(match_data);
-	pcre2_code_free(re);
 	return ret >= 0;
+}
+
+int32_t regex_match(const char *pattern, const char *str) {
+	pcre2_code *re = regex_compile(pattern);
+	if (!re) {
+		return 0;
+	}
+
+	int32_t ret = regex_match_compiled(re, str);
+	pcre2_code_free(re);
+	return ret;
 }
 
 void wl_list_append(struct wl_list *list, struct wl_list *object) {
