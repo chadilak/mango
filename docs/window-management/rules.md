@@ -65,6 +65,7 @@ windowrule=Parameter:Values,Parameter:Values,appid:Values,title:Values
 | `isnoanimation` | integer | `0` / `1` | Not apply animation |
 | `focused_opacity` | integer | `0` / `1` | Window focused opacity |
 | `unfocused_opacity` | integer | `0` / `1` | Window unfocused opacity |
+| `isobserved` | integer | `0` / `1` (default `0`) | When `1`, re-evaluates this rule's opacity and floating/geometry properties when the window title changes after it opens. Only affects opacity and floating rules. |
 | `allow_csd` | integer | `0` / `1` | Allow client side decoration |
 
 > **Tip:** For detailed visual effects configuration, see the [Window Effects](/docs/visuals/effects) page for blur, shadows, and opacity settings.

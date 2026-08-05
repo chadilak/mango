@@ -65,6 +65,7 @@ typedef struct {
 	pcre2_code *id_re;
 	pcre2_code *title_re;
 	uint32_t tags;
+	int32_t isobserved;
 	int32_t isfloating;
 	int32_t isfullscreen;
 	int32_t isfakefullscreen;
@@ -403,7 +404,7 @@ typedef struct {
 
 	ConfigWinRule *window_rules;
 	int32_t window_rules_count;
-	bool has_opacity_window_rule;
+	bool has_observed_window_rule;
 
 	ConfigMonitorRule *monitor_rules; // 动态数组
 	int32_t monitor_rules_count;	  // 条数
@@ -2564,6 +2565,7 @@ bool parse_option(Config *config, char *key, char *value, int line_number) {
 		rule->ignore_maximize = -1;
 		rule->ignore_minimize = -1;
 		rule->isnosizehint = -1;
+		rule->isobserved = -1;
 		rule->idleinhibit_when_focus = -1;
 		rule->vrr_only_fullscreen = -1;
 		rule->force_render = -1;
@@ -2688,6 +2690,8 @@ bool parse_option(Config *config, char *key, char *value, int line_number) {
 					rule->force_render = atoi(val);
 				} else if (strcmp(key, "activation_bypass") == 0) {
 					rule->activation_bypass = atoi(val);
+				} else if (strcmp(key, "isobserved") == 0) {
+					rule->isobserved = atoi(val);
 				} else if (strcmp(key, "isterm") == 0) {
 					rule->isterm = atoi(val);
 				} else if (strcmp(key, "allow_csd") == 0) {
@@ -2738,8 +2742,8 @@ bool parse_option(Config *config, char *key, char *value, int line_number) {
 		}
 		rule->id_re = rule->id ? regex_compile(rule->id) : NULL;
 		rule->title_re = rule->title ? regex_compile(rule->title) : NULL;
-		if (rule->focused_opacity > 0.0f || rule->unfocused_opacity > 0.0f) {
-			config->has_opacity_window_rule = true;
+		if (rule->isobserved == 1) {
+			config->has_observed_window_rule = true;
 		}
 		config->window_rules_count++;
 		return !parse_error;
