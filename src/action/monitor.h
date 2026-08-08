@@ -9,9 +9,18 @@ bool mango_scene_output_commit(struct wlr_scene_output *scene_output,
 	if (!force && !wlr_scene_output_needs_frame(scene_output))
 		return true;
 
+	bool was_cursor_hidden = cursor_hidden;
+	bool sc_hide_cursor =
+		config.cursor_hide_on_screencopy && screencopy_cursor_needs_hide(wlr_output);
+	if (sc_hide_cursor)
+		hidecursor(NULL);
+
 	// build the state, attaching the scene's Buffer to it
-	if (!wlr_scene_output_build_state(scene_output, state, NULL))
+	if (!wlr_scene_output_build_state(scene_output, state, NULL)) {
+		if (sc_hide_cursor && !was_cursor_hidden)
+			showcursor();
 		return false;
+	}
 
 	if (frame_allow_tearing) {
 		state->tearing_page_flip = true;
@@ -43,8 +52,13 @@ bool mango_scene_output_commit(struct wlr_scene_output *scene_output,
 		}
 	} else {
 		wlr_log(WLR_INFO, "Failed to commit output %s", m->wlr_output->name);
+		if (sc_hide_cursor && !was_cursor_hidden)
+			showcursor();
 		return false;
 	}
+
+	if (sc_hide_cursor && !was_cursor_hidden)
+		showcursor();
 
 	return committed;
 }
