@@ -894,6 +894,8 @@ static void set_rect_size(struct wlr_scene_rect *rect, int32_t width,
 static Client *center_tiled_select(Monitor *m);
 static void handlecursoractivity(void);
 static int32_t hidecursor(void *data);
+static void showcursor(void);
+static bool screencopy_cursor_needs_hide(struct wlr_output *output);
 static bool check_hit_no_border(Client *c);
 static void reset_keyboard_layout(void);
 static void client_update_oldmonname_record(Client *c, Monitor *m);
@@ -1034,6 +1036,7 @@ static struct wlr_keyboard_shortcuts_inhibit_manager_v1
 	*keyboard_shortcuts_inhibit;
 static struct wlr_virtual_pointer_manager_v1 *virtual_pointer_mgr;
 static struct wlr_output_power_manager_v1 *power_mgr;
+static struct wlr_screencopy_manager_v1 *screencopy_mgr;
 static struct wlr_ext_image_copy_capture_manager_v1 *ext_image_copy_capture_mgr;
 static struct wlr_pointer_gestures_v1 *pointer_gestures;
 static struct wlr_drm_lease_v1_manager *drm_lease_manager;
@@ -6569,7 +6572,7 @@ void setup(void) {
 	 * without compositor approval, see the setsel() function. */
 	compositor = wlr_compositor_create(dpy, 6, drw);
 	wlr_export_dmabuf_manager_v1_create(dpy);
-	wlr_screencopy_manager_v1_create(dpy);
+	screencopy_mgr = wlr_screencopy_manager_v1_create(dpy);
 	wlr_ext_output_image_capture_source_manager_v1_create(dpy, 1);
 	wlr_data_control_manager_v1_create(dpy);
 	wlr_data_device_manager_create(dpy);
@@ -6867,6 +6870,10 @@ void handlecursoractivity(void) {
 	if (!cursor_hidden)
 		return;
 
+	showcursor();
+}
+
+void showcursor(void) {
 	cursor_hidden = false;
 
 	if (last_cursor.shape)
@@ -6875,6 +6882,19 @@ void handlecursoractivity(void) {
 	else if (last_cursor.surface)
 		wlr_cursor_set_surface(cursor, last_cursor.surface,
 							   last_cursor.hotspot_x, last_cursor.hotspot_y);
+}
+
+bool screencopy_cursor_needs_hide(struct wlr_output *output) {
+	if (!screencopy_mgr)
+		return false;
+
+	struct wlr_screencopy_frame_v1 *frame;
+	wl_list_for_each(frame, &screencopy_mgr->frames, link) {
+		if (frame->output == output && !frame->overlay_cursor)
+			return true;
+	}
+
+	return false;
 }
 
 int32_t hidecursor(void *data) {

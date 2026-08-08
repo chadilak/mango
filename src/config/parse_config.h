@@ -306,6 +306,7 @@ typedef struct {
 	char *jump_labels;
 	uint32_t cursor_hide_timeout;
 	uint32_t cursor_hide_on_keypress;
+	uint32_t cursor_hide_on_screencopy;
 
 	uint32_t axis_bind_apply_timeout;
 	uint32_t focus_on_activate;
@@ -1892,6 +1893,8 @@ bool parse_option(Config *config, char *key, char *value, int line_number) {
 		config->cursor_hide_timeout = atoi(value);
 	} else if (strcmp(key, "cursor_hide_on_keypress") == 0) {
 		config->cursor_hide_on_keypress = atoi(value);
+	} else if (strcmp(key, "cursor_hide_on_screencopy") == 0) {
+		config->cursor_hide_on_screencopy = atoi(value);
 	} else if (strcmp(key, "axis_bind_apply_timeout") == 0) {
 		config->axis_bind_apply_timeout = atoi(value);
 	} else if (strcmp(key, "focus_on_activate") == 0) {
@@ -4025,6 +4028,8 @@ void override_config(void) {
 		CLAMP_INT(config.cursor_hide_timeout, 0, 36000);
 	config.cursor_hide_on_keypress =
 		CLAMP_INT(config.cursor_hide_on_keypress, 0, 1);
+	config.cursor_hide_on_screencopy =
+		CLAMP_INT(config.cursor_hide_on_screencopy, 0, 1);
 	config.single_scratchpad = CLAMP_INT(config.single_scratchpad, 0, 1);
 	config.repeat_rate = CLAMP_INT(config.repeat_rate, 1, 1000);
 	config.repeat_delay = CLAMP_INT(config.repeat_delay, 1, 20000);
@@ -4213,6 +4218,7 @@ void set_value_default() {
 	config.overviewgappo = 30;
 	config.cursor_hide_timeout = 0;
 	config.cursor_hide_on_keypress = 0;
+	config.cursor_hide_on_screencopy = 0;
 
 	config.warpcursor = 1;
 	config.drag_corner = 3;
