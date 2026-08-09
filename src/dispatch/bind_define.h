@@ -765,43 +765,106 @@ void set_proportion(const Arg *arg) {
 	if (!selmon)
 		return;
 
-	if (selmon->isoverview || !is_scroller_layout(selmon))
-		return;
-
-	if (selmon->visible_tiling_clients == 1 &&
-		!config.scroller_ignore_proportion_single)
+	if (selmon->isoverview)
 		return;
 
 	Client *tc = arg->tc ? arg->tc : selmon->sel;
 	if (!tc)
 		return;
 
-	tc = scroll_get_stack_head_client(tc);
-	if (!tc)
+	if (is_scroller_layout(selmon)) {
+		if (selmon->visible_tiling_clients == 1 &&
+			!config.scroller_ignore_proportion_single)
+			return;
+
+		tc = scroll_get_stack_head_client(tc);
+		if (!tc)
+			return;
+
+		Monitor *m = tc->mon;
+		uint32_t tag = m->pertag->curtag;
+		struct TagScrollerState *st = m->pertag->scroller_state[tag];
+		struct ScrollerStackNode *node = NULL;
+
+		if (st)
+			node = find_scroller_node(st, tc);
+
+		/* No-op if the window is already at this proportion; a redundant
+		 * arrange() reconfigure every scroller client at an unchanged size,
+		 * glitching/refreshing the surface for no geometry change. */
+		float current =
+			node ? node->scroller_proportion : tc->scroller_proportion;
+		if (fabsf(current - arg->f) < 0.0001f)
+			return;
+
+		if (node)
+			node->scroller_proportion = arg->f;
+		tc->scroller_proportion = arg->f;
+
+		uint32_t max_client_width =
+			m->w.width - 2 * config.scroller_structs - config.gappih;
+		tc->geom.width = max_client_width * arg->f;
+
+		arrange(m, false, false);
+		return;
+	}
+
+	if (selmon->pertag->ltidxs[selmon->pertag->curtag]->id !=
+		VERTICAL_REALLYFAIR)
+		return;
+
+	/* vertical_reallyfair: set the focused window's row to arg->f screen
+	 * height, rescaling its row weight against the other rows' weights. */
+	if (!ISTILED(tc) || tc->isfullscreen || tc->ismaximizescreen)
 		return;
 
 	Monitor *m = tc->mon;
-	uint32_t tag = m->pertag->curtag;
-	struct TagScrollerState *st = m->pertag->scroller_state[tag];
-	struct ScrollerStackNode *node = NULL;
-
-	if (st)
-		node = find_scroller_node(st, tc);
-
-	/* No-op if the window is already at this proportion; a redundant
-	 * arrange() reconfigure every scroller client at an unchanged size,
-	 * glitching/refreshing the surface for no geometry change. */
-	float current = node ? node->scroller_proportion : tc->scroller_proportion;
-	if (fabsf(current - arg->f) < 0.0001f)
+	if (!m)
+		return;
+	int32_t n = m->visible_fake_tiling_clients;
+	if (n <= 1)
 		return;
 
-	if (node)
-		node->scroller_proportion = arg->f;
-	tc->scroller_proportion = arg->f;
+	float f = arg->f;
+	if (f <= 0.0f)
+		f = 0.01f;
+	if (f >= 1.0f)
+		f = 0.99f;
 
-	uint32_t max_client_width =
-		m->w.width - 2 * config.scroller_structs - config.gappih;
-	tc->geom.width = max_client_width * arg->f;
+	int32_t rows = (n >= 3) ? 3 : 2;
+	float row_pers[3] = {1.0f, 1.0f, 1.0f};
+
+	Client *c;
+	wl_list_for_each(c, &clients, link) {
+		if (c->mon != m || !VISIBLEON(c, m) || !ISTILED(c))
+			continue;
+		if (c->grid_row_idx >= 0 && c->grid_row_idx < rows &&
+			c->grid_row_per > 0.0f)
+			row_pers[c->grid_row_idx] = c->grid_row_per;
+	}
+
+	int32_t my_r = tc->grid_row_idx;
+	if (my_r < 0 || my_r >= rows)
+		return;
+
+	float rest = 0.0f;
+	for (int32_t i = 0; i < rows; i++) {
+		if (i != my_r)
+			rest += row_pers[i];
+	}
+	if (rest <= 0.0f)
+		return;
+
+	float new_w = f / (1.0f - f) * rest;
+	if (new_w <= 0.0f)
+		return;
+
+	wl_list_for_each(c, &clients, link) {
+		if (c->mon != m || !VISIBLEON(c, m) || !ISTILED(c))
+			continue;
+		if (c->grid_row_idx == my_r)
+			c->grid_row_per = new_w;
+	}
 
 	arrange(m, false, false);
 	return;

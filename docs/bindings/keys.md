@@ -161,7 +161,7 @@ It is formed by tag numbers `1`–`9`, optionally combined with `|`.
 | `switch_layout` | - | Cycle through available layouts. |
 | `incnmaster` | `+1/-1` | Increase/Decrease number of master windows. |
 | `setmfact` | `+0.05` | Increase/Decrease master area size. |
-| `set_proportion` | `float` | Set scroller window proportion (0.0–1.0). |
+| `set_proportion` | `float` | Scroller: set window proportion (0.0–1.0). `vertical_reallyfair`: set focused window's row height as a fraction of screen height (0.0–1.0). |
 | `switch_proportion_preset` | - | Cycle proportion presets of scroller window. |
 | `scroller_stack` | `left/right/up/down` | Move window inside/outside scroller stack by direction. |
 | `incgaps` | `+/-value` | Adjust gap size. |
