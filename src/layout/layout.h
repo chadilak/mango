@@ -16,6 +16,21 @@ static void fair(Monitor *m);
 static void vertical_fair(Monitor *m);
 static void vertical_reallyfair(Monitor *m);
 
+/* vertical_reallyfair grid shape: 2 rows for two windows, else 3 rows.
+ * Shared by the arrange, resize and set_proportion paths so the row-count
+ * logic only ever lives in one place. row_cols[i] is the column count of row
+ * i (row 0 is the master row and always holds exactly one window). */
+static inline void reallyfair_compute_rows(int32_t n, int32_t *out_rows,
+										   int32_t out_row_cols[3]) {
+	int32_t rows = (n >= 3) ? 3 : 2;
+	int32_t row1_cnt = (n - 1) / 2;
+	int32_t row2_cnt = n - 1 - row1_cnt;
+	out_row_cols[0] = 1;
+	out_row_cols[1] = (rows > 1) ? ((n >= 3) ? row1_cnt : n - 1) : 0;
+	out_row_cols[2] = (rows > 2) ? row2_cnt : 0;
+	*out_rows = rows;
+}
+
 /* layout(s) */
 Layout overviewlayout = {"󰃇", overview, "overview"};
 

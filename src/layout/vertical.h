@@ -603,12 +603,9 @@ void vertical_reallyfair(Monitor *m) {
 	}
 
 	/* rows: 2 (half height each) for two windows, else 3 rows of 1/3 */
-	int32_t rows = (n >= 3) ? 3 : 2;
-	int32_t row1_cnt = (n - 1) / 2;
-	int32_t row2_cnt = n - 1 - row1_cnt;
-	int32_t max_cols = MANGO_MAX(row1_cnt, row2_cnt);
-	int32_t row_cols[3] = {1, rows > 1 ? (n >= 3 ? row1_cnt : n - 1) : 0,
-						   rows > 2 ? row2_cnt : 0};
+	int32_t rows, row_cols[3];
+	reallyfair_compute_rows(n, &rows, row_cols);
+	int32_t max_cols = MANGO_MAX(row_cols[1], row_cols[2]);
 
 	float *row_pers = calloc(rows, sizeof(*row_pers));
 	float *col_pers = calloc(rows * max_cols, sizeof(*col_pers));

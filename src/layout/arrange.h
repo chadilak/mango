@@ -981,11 +981,8 @@ void resize_tile_reallyfair(Client *grabc, bool isdrag, int32_t offsetx,
 	if (n <= 1)
 		return;
 
-	int32_t rows = (n >= 3) ? 3 : 2;
-	int32_t row1_cnt = (n - 1) / 2;
-	int32_t row2_cnt = n - 1 - row1_cnt;
-	int32_t row_cols[3] = {1, rows > 1 ? (n >= 3 ? row1_cnt : n - 1) : 0,
-						   rows > 2 ? row2_cnt : 0};
+	int32_t rows, row_cols[3];
+	reallyfair_compute_rows(n, &rows, row_cols);
 
 	if (!start_drag_window && isdrag) {
 		drag_begin_cursorx = cursor->x;
@@ -1034,9 +1031,15 @@ void resize_tile_reallyfair(Client *grabc, bool isdrag, int32_t offsetx,
 
 		/* --- 行高调整:交换相邻两行之间的权重 --- */
 		int32_t my_r = grabc->grid_row_idx;
-		int32_t adj_r = my_r + 1;
-		float sign_y = 1.0f;
-		if (isdrag) {
+		int32_t adj_r;
+		float sign_y;
+		if (my_r == 0) {
+			adj_r = 1;
+			sign_y = 1.0f;
+		} else if (my_r == rows - 1) {
+			adj_r = rows - 2;
+			sign_y = -1.0f;
+		} else if (isdrag) {
 			if (grabc->cursor_in_upper_half) {
 				adj_r = my_r - 1;
 				sign_y = -1.0f;
@@ -1044,13 +1047,8 @@ void resize_tile_reallyfair(Client *grabc, bool isdrag, int32_t offsetx,
 				adj_r = my_r + 1;
 				sign_y = 1.0f;
 			}
-		}
-		if (my_r == rows - 1) {
-			adj_r = rows - 2;
-			sign_y = -1.0f;
-		}
-		if (my_r == 0) {
-			adj_r = 1;
+		} else {
+			adj_r = my_r + 1;
 			sign_y = 1.0f;
 		}
 		if (adj_r < 0)
@@ -1072,11 +1070,10 @@ void resize_tile_reallyfair(Client *grabc, bool isdrag, int32_t offsetx,
 		}
 
 		if (adj_old_row > 0.0f) {
-			float dy_clamped = dy;
-			if (my_old_row + dy_clamped < 0.1f)
-				dy_clamped = 0.1f - my_old_row;
-			if (adj_old_row - dy_clamped < 0.1f)
-				dy_clamped = adj_old_row - 0.1f;
+			/* both bounds up front; keep my row >= 0.1 and adj row >= 0.1 */
+			float lo = 0.1f - my_old_row;
+			float hi = adj_old_row - 0.1f;
+			float dy_clamped = fmaxf(lo, fminf(dy, hi));
 
 			float new_my_row = my_old_row + dy_clamped;
 			float new_adj_row = adj_old_row - dy_clamped;
@@ -1093,9 +1090,16 @@ void resize_tile_reallyfair(Client *grabc, bool isdrag, int32_t offsetx,
 
 		/* --- 行列宽调整:仅在被拖拽的行内部 --- */
 		if (my_r >= 1 && row_cols[my_r] > 1) {
-			int32_t adj_c = grabc->grid_col_idx + 1;
-			float sign_x = 1.0f;
-			if (isdrag) {
+			int32_t max_c = row_cols[my_r] - 1;
+			int32_t adj_c;
+			float sign_x;
+			if (grabc->grid_col_idx == 0) {
+				adj_c = 1;
+				sign_x = 1.0f;
+			} else if (grabc->grid_col_idx == max_c) {
+				adj_c = max_c - 1;
+				sign_x = -1.0f;
+			} else if (isdrag) {
 				if (grabc->cursor_in_left_half) {
 					adj_c = grabc->grid_col_idx - 1;
 					sign_x = -1.0f;
@@ -1103,14 +1107,8 @@ void resize_tile_reallyfair(Client *grabc, bool isdrag, int32_t offsetx,
 					adj_c = grabc->grid_col_idx + 1;
 					sign_x = 1.0f;
 				}
-			}
-			int32_t max_c = row_cols[my_r] - 1;
-			if (grabc->grid_col_idx == max_c) {
-				adj_c = max_c - 1;
-				sign_x = -1.0f;
-			}
-			if (grabc->grid_col_idx == 0) {
-				adj_c = 1;
+			} else {
+				adj_c = grabc->grid_col_idx + 1;
 				sign_x = 1.0f;
 			}
 			if (adj_c < 0)
@@ -1132,11 +1130,10 @@ void resize_tile_reallyfair(Client *grabc, bool isdrag, int32_t offsetx,
 			}
 
 			if (adj_old_col > 0.0f) {
-				float dx_clamped = dx;
-				if (my_old_col + dx_clamped < 0.1f)
-					dx_clamped = 0.1f - my_old_col;
-				if (adj_old_col - dx_clamped < 0.1f)
-					dx_clamped = adj_old_col - 0.1f;
+				/* both bounds up front, clamp once */
+				float lo = 0.1f - my_old_col;
+				float hi = adj_old_col - 0.1f;
+				float dx_clamped = fmaxf(lo, fminf(dx, hi));
 
 				float new_my_col = my_old_col + dx_clamped;
 				float new_adj_col = adj_old_col - dx_clamped;

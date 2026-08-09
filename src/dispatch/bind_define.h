@@ -831,7 +831,8 @@ void set_proportion(const Arg *arg) {
 	if (f >= 1.0f)
 		f = 0.99f;
 
-	int32_t rows = (n >= 3) ? 3 : 2;
+	int32_t rows, row_cols[3];
+	reallyfair_compute_rows(n, &rows, row_cols);
 	float row_pers[3] = {1.0f, 1.0f, 1.0f};
 
 	Client *c;
@@ -857,6 +858,11 @@ void set_proportion(const Arg *arg) {
 
 	float new_w = f / (1.0f - f) * rest;
 	if (new_w <= 0.0f)
+		return;
+
+	/* No-op if the focused row is already at this weight; a redundant
+	 * arrange() reconfigures and refreshes every client for no change. */
+	if (fabsf(new_w - row_pers[my_r]) < 0.0001f)
 		return;
 
 	wl_list_for_each(c, &clients, link) {
