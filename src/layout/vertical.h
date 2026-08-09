@@ -557,3 +557,152 @@ void vertical_fair(Monitor *m) {
 	free(col_x_max);
 	free(col_w_max);
 }
+
+void vertical_reallyfair(Monitor *m) {
+	int32_t i, n = 0;
+	Client *c = NULL;
+
+	n = m->visible_fake_tiling_clients;
+	if (n == 0)
+		return;
+
+	int32_t cur_gappiv = enablegaps ? m->gappiv : 0;
+	int32_t cur_gappih = enablegaps ? m->gappih : 0;
+	int32_t cur_gappov = enablegaps ? m->gappov : 0;
+	int32_t cur_gappoh = enablegaps ? m->gappoh : 0;
+
+	if (config.smartgaps && n == 1)
+		cur_gappiv = cur_gappih = cur_gappov = cur_gappoh = 0;
+
+	Client **arr = calloc(n, sizeof(*arr));
+	if (!arr)
+		return;
+	i = 0;
+	wl_list_for_each(c, &clients, link) {
+		if (VISIBLEON(c, m) && ISFAKETILED(c)) {
+			arr[i++] = c;
+			if (i >= n)
+				break;
+		}
+	}
+
+	if (n == 1) {
+		client_tile_resize(
+			arr[0],
+			(struct wlr_box){.x = m->w.x + cur_gappoh,
+							 .y = m->w.y + cur_gappov,
+							 .width = m->w.width - 2 * cur_gappoh,
+							 .height = m->w.height - 2 * cur_gappov},
+			0);
+		arr[0]->grid_row_idx = 0;
+		arr[0]->grid_col_idx = 0;
+		arr[0]->grid_row_per = 1.0f;
+		arr[0]->grid_col_per = 1.0f;
+		free(arr);
+		return;
+	}
+
+	/* rows: 2 (half height each) for two windows, else 3 rows of 1/3 */
+	int32_t rows = (n >= 3) ? 3 : 2;
+	int32_t row1_cnt = (n - 1) / 2;
+	int32_t row2_cnt = n - 1 - row1_cnt;
+	int32_t max_cols = MANGO_MAX(row1_cnt, row2_cnt);
+	int32_t row_cols[3] = {1, rows > 1 ? (n >= 3 ? row1_cnt : n - 1) : 0,
+						   rows > 2 ? row2_cnt : 0};
+
+	float *row_pers = calloc(rows, sizeof(*row_pers));
+	float *col_pers = calloc(rows * max_cols, sizeof(*col_pers));
+	if (!row_pers || !col_pers) {
+		free(row_pers);
+		free(col_pers);
+		free(arr);
+		return;
+	}
+
+	/* restore resize-adjusted weights when the grid structure is stable */
+	for (i = 0; i < rows; i++)
+		row_pers[i] = 1.0f;
+	for (i = 0; i < rows * max_cols; i++)
+		col_pers[i] = 1.0f;
+
+	for (i = 0; i < n; i++) {
+		c = arr[i];
+		if (c->grid_row_idx >= 0 && c->grid_row_idx < rows &&
+			c->grid_row_per > 0.0f)
+			row_pers[c->grid_row_idx] = c->grid_row_per;
+	}
+	for (i = 0; i < n; i++) {
+		c = arr[i];
+		if (c->grid_row_idx >= 1 && c->grid_row_idx < rows &&
+			c->grid_col_idx >= 0 &&
+			c->grid_col_idx < row_cols[c->grid_row_idx] &&
+			c->grid_col_per > 0.0f)
+			col_pers[c->grid_row_idx * max_cols + c->grid_col_idx] =
+				c->grid_col_per;
+	}
+
+	float sum_row = 0.0f;
+	for (i = 0; i < rows; i++)
+		sum_row += row_pers[i];
+
+	int32_t avail_h = m->w.height - 2 * cur_gappov - (rows - 1) * cur_gappiv;
+	int32_t row_h[3];
+	int32_t row_y[3];
+	int32_t next_y = m->w.y + cur_gappov;
+	for (i = 0; i < rows; i++) {
+		row_h[i] =
+			(i == rows - 1) ? 0 : (int32_t)(avail_h * row_pers[i] / sum_row);
+		row_y[i] = next_y;
+		next_y += row_h[i] + cur_gappiv;
+	}
+	row_h[rows - 1] = m->w.y + m->w.height - cur_gappov - row_y[rows - 1];
+
+	/* row 0: master, always full width */
+	client_tile_resize(arr[0],
+					   (struct wlr_box){.x = m->w.x + cur_gappoh,
+										.y = row_y[0],
+										.width = m->w.width - 2 * cur_gappoh,
+										.height = row_h[0]},
+					   0);
+	arr[0]->grid_row_idx = 0;
+	arr[0]->grid_col_idx = 0;
+	arr[0]->grid_row_per = row_pers[0];
+	arr[0]->grid_col_per = 1.0f;
+
+	/* rows 1 and 2: remaining windows split fairly, bottom row rounds up */
+	int32_t arr_idx = 1;
+	for (i = 1; i < rows; i++) {
+		int32_t cnt = row_cols[i];
+		if (cnt <= 0)
+			continue;
+		float sum_col = 0.0f;
+		for (int j = 0; j < cnt; j++)
+			sum_col += col_pers[i * max_cols + j];
+		if (sum_col <= 0.0f)
+			sum_col = 1.0f;
+		int32_t avail_w = m->w.width - 2 * cur_gappoh - (cnt - 1) * cur_gappih;
+		int32_t cx = m->w.x + cur_gappoh;
+		int32_t cy = row_y[i];
+		for (int j = 0; j < cnt; j++) {
+			Client *cc = arr[arr_idx++];
+			int32_t cw =
+				(j == cnt - 1)
+					? (m->w.x + m->w.width - cur_gappoh - cx)
+					: (int32_t)(avail_w * col_pers[i * max_cols + j] / sum_col);
+			client_tile_resize(
+				cc,
+				(struct wlr_box){
+					.x = cx, .y = cy, .width = cw, .height = row_h[i]},
+				0);
+			cc->grid_row_idx = i;
+			cc->grid_col_idx = j;
+			cc->grid_row_per = row_pers[i];
+			cc->grid_col_per = col_pers[i * max_cols + j];
+			cx += cw + cur_gappih;
+		}
+	}
+
+	free(row_pers);
+	free(col_pers);
+	free(arr);
+}
