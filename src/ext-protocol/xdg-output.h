@@ -71,13 +71,13 @@ static void xdg_output_get_values(struct MangoXDGOutput *output, int32_t *lx,
 		output->wlr_output->scale > 0.f ? output->wlr_output->scale : 1.f;
 
 	/* 逻辑尺寸直接取自 wlr_output 当前状态（物理分辨率 ÷ scale），
-	 * 与 wl_output.mode/scale 严格一致，避免依赖 m->m（布局缓存）。 */
-	int32_t w = (int32_t)roundf(output->wlr_output->width / scale);
-	int32_t h = (int32_t)roundf(output->wlr_output->height / scale);
-
-	/* 物理尺寸必须考虑输出旋转，否则旋转 90/270 时宽高未交换 */
+	 * 与 wl_output.mode/scale 严格一致，避免依赖 m->m（布局缓存）。
+	 * 必须用旋转后的尺寸：xdg-output 的 logical_size 是全局坐标空间
+	 * 尺寸，旋转 90/270 时宽高需交换（协议示例 1920x1080 + 90° → 1080x1920）。 */
 	int32_t tw, th;
 	wlr_output_transformed_resolution(output->wlr_output, &tw, &th);
+	int32_t w = (int32_t)roundf(tw / scale);
+	int32_t h = (int32_t)roundf(th / scale);
 
 	*lx = x;
 	*ly = y;
