@@ -143,6 +143,16 @@
 #define END(A) ((A) + LENGTH(A))
 #define LISTEN(E, L, H) wl_signal_add((E), ((L)->notify = (H), (L)))
 
+/* 安全移除 listener：链接从未加入或已被移除时静默跳过，
+ * 避免在 X11 表面生命周期竞态下对无效链接调用 wl_list_remove 崩溃。 */
+static void remove_listener(struct wl_listener *listener) {
+	struct wl_list *link = listener ? &listener->link : NULL;
+	if (!link || !link->next)
+		return;
+	wl_list_remove(link);
+	link->prev = link->next = NULL;
+}
+
 #define TAGMASK (tagmask)
 uint32_t tagmask = ((1u << 9) - 1); // 默认 9 个 tag
 
@@ -397,6 +407,11 @@ struct Client {
 	 * 上传。这里记录最近一次请求的物理尺寸/位置，相同参数不再重复发送。 */
 	int32_t xwl_req_x, xwl_req_y, xwl_req_w, xwl_req_h;
 	bool xwl_req_valid;
+	/* X11 弹窗渲染竞态标记：wlroots 在发出 associate 前已挂好自身
+	 * commit->map 链路，若窗口在 associate 前就 commit+mapping，Map 事件
+	 * 会在我们挂上监听之前触发并丢掉，客户端永远拿不到 mapnotify。
+	 * 在 associatex11 里发现 surface 已经 mapped 时手动补一次 mapnotify。 */
+	bool xwl_assoc_mapped;
 #endif
 	uint32_t bw;
 	uint32_t tags, oldtags, mini_restore_tag;
@@ -1205,6 +1220,7 @@ static void associatex11(struct wl_listener *listener, void *data);
 static void sethints(struct wl_listener *listener, void *data);
 static void xwaylandready(struct wl_listener *listener, void *data);
 static void setgeometrynotify(struct wl_listener *listener, void *data);
+static void xwayland_restack_top(Client *c);
 static struct wl_listener new_xwayland_surface = {.notify = createnotifyx11};
 static struct wl_listener xwayland_ready = {.notify = xwaylandready};
 static struct wlr_xwayland *xwayland;
@@ -4092,24 +4108,25 @@ void // 0.7 custom
 destroynotify(struct wl_listener *listener, void *data) {
 	/* Called when the xdg_toplevel is destroyed. */
 	Client *c = wl_container_of(listener, c, destroy);
-	wl_list_remove(&c->destroy.link);
-	wl_list_remove(&c->set_title.link);
-	wl_list_remove(&c->fullscreen.link);
-	wl_list_remove(&c->maximize.link);
-	wl_list_remove(&c->minimize.link);
+	remove_listener(&c->destroy);
+	remove_listener(&c->set_title);
+	remove_listener(&c->fullscreen);
+	remove_listener(&c->maximize);
+	remove_listener(&c->minimize);
 #ifdef XWAYLAND
 	if (c->type != XDGShell) {
-		wl_list_remove(&c->activate.link);
-		wl_list_remove(&c->associate.link);
-		wl_list_remove(&c->configure.link);
-		wl_list_remove(&c->dissociate.link);
-		wl_list_remove(&c->set_hints.link);
+		remove_listener(&c->activate);
+		remove_listener(&c->associate);
+		remove_listener(&c->configure);
+		remove_listener(&c->dissociate);
+		remove_listener(&c->set_hints);
+		remove_listener(&c->set_geometry);
 	} else
 #endif
 	{
-		wl_list_remove(&c->commit.link);
-		wl_list_remove(&c->map.link);
-		wl_list_remove(&c->unmap.link);
+		remove_listener(&c->commit);
+		remove_listener(&c->map);
+		remove_listener(&c->unmap);
 	}
 	free(c);
 }
@@ -4167,7 +4184,27 @@ void focusclient(Client *c, int32_t lift) {
 
 	/* Raise client in stacking order if requested */
 	if (c && lift) {
+#ifdef XWAYLAND
+		/* 记录提升前是否已处于场景顶层：只有在本次焦点提升真的把窗口
+		 * 提到其他窗口之上时才同步 X11 堆叠（XCB_STACK_MODE_ABOVE），
+		 * 否则跳过。这避免对那些本就已在顶层的窗口做无谓的 X11 restack，
+		 * 干扰其他应用的 override_redirect 弹窗。
+		 *
+		 * 注意不能把该判断放进 xwayland_restack_top 内部：新映射的 X11
+		 * 窗口场景节点创建后天然就是最顶子节点（wlr_scene.c 从链表尾插入），
+		 * 若共享判断“已在顶层就跳过”，会破坏 map 路径的修复。 */
+		bool was_scene_top = false;
+		if (c->scene && c->scene->node.parent) {
+			struct wlr_scene_node *scene_top = wl_container_of(
+				c->scene->node.parent->children.prev, scene_top, link);
+			was_scene_top = scene_top == &c->scene->node;
+		}
+#endif
 		client_raise_group(c);
+#ifdef XWAYLAND
+		if (!was_scene_top)
+			xwayland_restack_top(c);
+#endif
 	}
 
 	if (c && client_surface(c) == old_keyboard_focus_surface && selmon &&
@@ -4867,6 +4904,20 @@ mapnotify(struct wl_listener *listener, void *data) {
 
 	c->id = generate_client_id();
 
+#ifdef XWAYLAND
+	if (client_is_x11(c))
+		mango_error(true, WLR_DEBUG,
+					"xwayland map: class=%s title=%s win=%u surf=%p "
+					"unmanaged=%d isfloating=%d override=%d surface_mapped=%d",
+					client_get_appid(c), client_get_title(c),
+					c->surface.xwayland ? c->surface.xwayland->window_id : 0,
+					(void *)client_surface(c), client_is_unmanaged(c),
+					c->isfloating,
+					c->surface.xwayland ? c->surface.xwayland->override_redirect
+										: -1,
+					client_surface(c) ? client_surface(c)->mapped : -1);
+#endif
+
 	/* Create scene tree for this client and its border */
 	c->scene = client_surface(c)->data = wlr_scene_tree_create(layers[LyrTile]);
 	wlr_scene_node_set_enabled(&c->scene->node, c->type != XDGShell);
@@ -4891,6 +4942,9 @@ mapnotify(struct wl_listener *listener, void *data) {
 		}
 		/* scene 处理后强制根 surface 显示逻辑尺寸 */
 		LISTEN(&client_surface(c)->events.commit, &c->commmitx11, commitx11);
+		/* 完整走过一次 mapnotify（无论是真实 map 事件还是 associate
+		 * 时补触发），标记并要求后续再触发都走真实路径 */
+		c->xwl_assoc_mapped = true;
 	}
 #endif
 
@@ -4937,17 +4991,21 @@ mapnotify(struct wl_listener *listener, void *data) {
 		/* 应用 scale 后重新计算 c->geom（逻辑尺寸）*/
 		client_get_geometry(c, &c->geom);
 		struct wlr_box geo = c->geom;
-		fix_xwayland_coordinate(&geo);
-		struct wlr_box xgeo = geo;
-		xwayland_logical_to_x11(&xgeo, c->xwayland_scale);
-		wlr_scene_node_set_position(&c->scene->node, geo.x, geo.y);
-		wlr_xwayland_surface_configure(c->surface.xwayland, xgeo.x, xgeo.y,
-									   xgeo.width, xgeo.height);
+		/* Override-redirect 窗口由客户端自定位，合成器不要移动/重配它们，
+		 * 否则会与 Java 之类的客户端持续自调整位置冲突，
+		 * 造成弹窗出现在“奇怪区域”且渲染/输入错位。 */
+		mango_error(true, WLR_DEBUG,
+					"xwayland unmanaged map: class=%s title=%s override=%d "
+					"requested=%dx%d@%d,%d xwm=%dx%d@%d,%d scale=%.2f",
+					client_get_appid(c), client_get_title(c),
+					c->surface.xwayland->override_redirect, geo.width,
+					geo.height, geo.x, geo.y, c->surface.xwayland->width,
+					c->surface.xwayland->height, c->surface.xwayland->x,
+					c->surface.xwayland->y, c->xwayland_scale);
 		/* 立即按 buffer 实际尺寸设置 dest_size（逻辑尺寸 = buffer/scale），
 		 * 避免弹出第一帧以物理尺寸显示导致内容被缩放，再等 commit 才纠正 */
 		client_update_xwayland_dest_size(c);
-		LISTEN(&c->surface.xwayland->events.set_geometry, &c->set_geometry,
-			   setgeometrynotify);
+		wlr_scene_node_set_position(&c->scene->node, geo.x, geo.y);
 		wlr_scene_node_reparent(&c->scene->node, layers[LyrOverlay]);
 		if (client_wants_focus(c)) {
 			focusclient(c, 1);
@@ -5049,6 +5107,11 @@ mapnotify(struct wl_listener *listener, void *data) {
 	// make sure the animation is open type
 	c->is_pending_open_animation = true;
 	resize(c, c->geom, 0);
+#ifdef XWAYLAND
+	/* 新映射的 X11 窗口立即提升到 X11 堆叠顶层，避免被其下方更大的
+	 * X11 窗口（如 JDownloader 主窗口）拦截点击。 */
+	xwayland_restack_top(c);
+#endif
 	printstatus(IPC_WATCH_ARRANGGE);
 }
 
@@ -6096,6 +6159,9 @@ void setmaximizescreen(Client *c, int32_t maximizescreen, bool rearrange) {
 		}
 
 		wlr_scene_node_raise_to_top(&c->scene->node);
+#ifdef XWAYLAND
+		xwayland_restack_top(c);
+#endif
 		if (!is_scroller_layout(c->mon) || c->isfloating)
 			resize(c, maximizescreen_box, 0);
 	} else {
@@ -6156,6 +6222,9 @@ void setfullscreen(Client *c, int32_t fullscreen,
 
 		c->bw = 0;
 		wlr_scene_node_raise_to_top(&c->scene->node); // 将视图提升到顶层
+#ifdef XWAYLAND
+		xwayland_restack_top(c);
+#endif
 		if (!is_scroller_layout(c->mon) || c->isfloating)
 			resize(c, c->mon->m, 1);
 
@@ -6984,6 +7053,16 @@ void unmapnotify(struct wl_listener *listener, void *data) {
 	Monitor *m = NULL;
 	Client *nextfocus = NULL;
 	c->iskilling = 1;
+#ifdef XWAYLAND
+	if (client_is_x11(c))
+		mango_error(true, WLR_DEBUG,
+					"xwayland unmap: class=%s title=%s win=%u surf=%p",
+					client_get_appid(c), client_get_title(c),
+					c->surface.xwayland ? c->surface.xwayland->window_id : 0,
+					(void *)client_surface(c));
+	if (client_is_x11(c))
+		c->xwl_assoc_mapped = false;
+#endif
 	struct ScrollerStackNode *target_node =
 		c->mon ? find_scroller_node(
 					 c->mon->pertag->scroller_state[c->mon->pertag->curtag], c)
@@ -7565,12 +7644,23 @@ static void xwayland_x11_to_logical(struct wlr_box *box, float scale) {
 }
 
 void fix_xwayland_coordinate(struct wlr_box *geom) {
+	struct wlr_box center;
+
 	if (!selmon)
 		return;
 
-	// 1. 如果窗口已经在当前活动显示器内，直接返回
-	if (geom->x >= selmon->m.x && geom->x <= selmon->m.x + selmon->m.width &&
-		geom->y >= selmon->m.y && geom->y <= selmon->m.y + selmon->m.height)
+	/*
+	 * 只有窗口完全落在所有显示器之外时，才把它拉回当前活动显示器。
+	 * 否则保持客户端请求的位置不动。
+	 *
+	 * 之前只拿 selmon 判定，会把 Java 之类的程序以父窗口/鼠标为参考定位的
+	 * 弹窗（时常落在非当前显示器或边缘）强制拉到 selmon 中央，
+	 * 造成弹窗出现在“奇怪区域”且点击位置与渲染位置错位。
+	 */
+	center = *geom;
+	center.x += center.width / 2;
+	center.y += center.height / 2;
+	if (xytomon(center.x, center.y) || xytomon(geom->x, geom->y))
 		return;
 
 	geom->x = selmon->m.x + (selmon->m.width - geom->width) / 2;
@@ -7636,9 +7726,15 @@ void configurex11(struct wl_listener *listener, void *data) {
 	new_geo.height = event->height;
 	/* event 是 X11 物理尺寸，转回 wayland 逻辑坐标 */
 	xwayland_x11_to_logical(&new_geo, c->xwayland_scale);
-	fix_xwayland_coordinate(&new_geo);
+	mango_error(true, WLR_DEBUG,
+				"xwayland configure: class=%s title=%s unmanaged=%d floating=%d "
+				"requested=%dx%d@%d,%d",
+				client_get_appid(c), client_get_title(c),
+				client_is_unmanaged(c), c->isfloating, new_geo.width,
+				new_geo.height, new_geo.x, new_geo.y);
 
 	if (!client_surface(c) || !client_surface(c)->mapped) {
+		fix_xwayland_coordinate(&new_geo);
 		struct wlr_box xgeo = new_geo;
 		xwayland_logical_to_x11(&xgeo, c->xwayland_scale);
 		wlr_xwayland_surface_configure(c->surface.xwayland, xgeo.x, xgeo.y,
@@ -7647,11 +7743,18 @@ void configurex11(struct wl_listener *listener, void *data) {
 	}
 
 	if (client_is_unmanaged(c)) {
-		struct wlr_box xgeo = new_geo;
-		xwayland_logical_to_x11(&xgeo, c->xwayland_scale);
-		wlr_scene_node_set_position(&c->scene->node, new_geo.x, new_geo.y);
-		wlr_xwayland_surface_configure(c->surface.xwayland, xgeo.x, xgeo.y,
-									   xgeo.width, xgeo.height);
+		/* Override-redirect：客户端自定位，合成器不移动、不调用
+		 * wlr_xwayland_surface_configure，仅同步场景位置。 */
+		if (c->scene) {
+			int32_t sx = (int32_t)roundf(c->scene->node.x);
+			int32_t sy = (int32_t)roundf(c->scene->node.y);
+			wlr_scene_node_set_position(&c->scene->node, new_geo.x, new_geo.y);
+			mango_error(true, WLR_DEBUG,
+						"xwayland configure(unmanaged move): class=%s "
+						"title=%s scene %d,%d -> %d,%d",
+						client_get_appid(c), client_get_title(c), sx, sy,
+						new_geo.x, new_geo.y);
+		}
 		return;
 	}
 
@@ -7681,6 +7784,9 @@ void createnotifyx11(struct wl_listener *listener, void *data) {
 	c = xsurface->data = ecalloc(1, sizeof(*c));
 	c->surface.xwayland = xsurface;
 	c->type = X11;
+	mango_error(true, WLR_DEBUG,
+				"xwayland create:nw class=%s title=%s win=%u",
+				client_get_appid(c), client_get_title(c), xsurface->window_id);
 	/* Listen to the various events it can emit */
 	LISTEN(&xsurface->events.associate, &c->associate, associatex11);
 	LISTEN(&xsurface->events.destroy, &c->destroy, destroynotify);
@@ -7691,12 +7797,33 @@ void createnotifyx11(struct wl_listener *listener, void *data) {
 		   fullscreennotify);
 	LISTEN(&xsurface->events.set_hints, &c->set_hints, sethints);
 	LISTEN(&xsurface->events.set_title, &c->set_title, updatetitle);
+	/* 所有 X11 客户端都跟踪自移动（否则渲染/输入与客户端位置脱节）*/
+	LISTEN(&xsurface->events.set_geometry, &c->set_geometry,
+		   setgeometrynotify);
 	LISTEN(&xsurface->events.request_maximize, &c->maximize, maximizenotify);
 	LISTEN(&xsurface->events.request_minimize, &c->minimize, minimizenotify);
 }
 
 void commitx11(struct wl_listener *listener, void *data) {
 	Client *c = wl_container_of(listener, c, commmitx11);
+
+#ifdef XWAYLAND
+	if (c->surface.xwayland && c->surface.xwayland->surface) {
+		struct wlr_surface *s = c->surface.xwayland->surface;
+		static uint32_t last_commit_win = 0;
+		uint32_t win = c->surface.xwayland->window_id;
+		if (win != last_commit_win) {
+			last_commit_win = win;
+			mango_error(true, WLR_DEBUG,
+						"xwayland commitx11: class=%s title=%s win=%u "
+						"mapped=%d buf=%dx%d cfg_serial=%u",
+						client_get_appid(c), client_get_title(c), win,
+						s->mapped, s->current.width, s->current.height,
+						c->configure_serial);
+		}
+	}
+#endif
+
 	struct wlr_surface_state *state = &c->surface.xwayland->surface->current;
 
 	/* overview 卡片节点是独立的 scene_surface，提交后自动更新 */
@@ -7722,15 +7849,62 @@ void commitx11(struct wl_listener *listener, void *data) {
 
 void associatex11(struct wl_listener *listener, void *data) {
 	Client *c = wl_container_of(listener, c, associate);
+	uint32_t winid = c->surface.xwayland ? c->surface.xwayland->window_id : 0;
+
+	mango_error(true, WLR_DEBUG,
+				"xwayland associate: class=%s title=%s win=%u surf=%p "
+				"mapped=%d has_buffer=%d xwl_assoc_mapped=%d",
+				client_get_appid(c), client_get_title(c), winid,
+				(void *)client_surface(c), client_surface(c)->mapped,
+				wlr_surface_has_buffer(client_surface(c)),
+				c->xwl_assoc_mapped);
 
 	LISTEN(&client_surface(c)->events.map, &c->map, mapnotify);
 	LISTEN(&client_surface(c)->events.unmap, &c->unmap, unmapnotify);
+
+	/* 竞态修复：wlroots 在发出 associate 之前就会先挂好自身的
+	 * commit->map 链路（xwm.c xwayland_surface_associate），因此 X11 窗口的
+	 * wl_surface 可能提前 commit 完成，产生两种都会被丢掉的映射：
+	 *
+	 * 1) associate 前 commit 且 mapped 已置位：map 事件已被 wlroots 内部
+	 *    监听消费/早于我们挂监听触发 → 直接补一次 mapnotify。
+	 * 2) associate 前只 commit 了 buffer 但 mapped 尚未置位（wlroots 的
+	 *    surface_map 监听还没挂上，commit 早于它到达，mapped 停在 false）：
+	 *    之后再无 commit，map 事件永远不会来 → 手动 wlr_surface_map()，
+	 *    它会按其单火保护置位并发出 map 事件，命中上面刚挂的 mapnotify。
+	 *
+	 * 不处理则客户端永远不会进入合成树（曾导致 JDownloader 弹窗完全
+	 * 不可见、应用冻结）。 */
+	if (!c->xwl_assoc_mapped) {
+		if (!client_surface(c)->mapped &&
+			wlr_surface_has_buffer(client_surface(c))) {
+			mango_error(true, WLR_DEBUG,
+						"xwayland associate catch-up map(has_buffer): "
+						"class=%s title=%s win=%u",
+						client_get_appid(c), client_get_title(c), winid);
+			wlr_surface_map(client_surface(c));
+		} else if (client_surface(c)->mapped) {
+			mango_error(true, WLR_DEBUG,
+						"xwayland associate catch-up map(already mapped): "
+						"class=%s title=%s win=%u",
+						client_get_appid(c), client_get_title(c), winid);
+			mapnotify(&c->map, client_surface(c));
+		}
+	}
 }
 
 void dissociatex11(struct wl_listener *listener, void *data) {
 	Client *c = wl_container_of(listener, c, dissociate);
-	wl_list_remove(&c->map.link);
-	wl_list_remove(&c->unmap.link);
+	mango_error(true, WLR_DEBUG,
+				"xwayland dissociate: class=%s title=%s win=%u surf=%p "
+				"mapped=%d xwl_assoc_mapped=%d",
+				client_get_appid(c), client_get_title(c),
+				c->surface.xwayland ? c->surface.xwayland->window_id : 0,
+				(void *)client_surface(c), client_surface(c)->mapped,
+				c->xwl_assoc_mapped);
+	remove_listener(&c->map);
+	remove_listener(&c->unmap);
+	remove_listener(&c->commmitx11);
 	c->xwl_root_buffer = NULL;
 	c->xwl_clip_active = false;
 }
@@ -7782,8 +7956,36 @@ static void setgeometrynotify(struct wl_listener *listener, void *data) {
 	};
 	/* xwayland->x/y 是 X11 物理尺寸，转回 wayland 逻辑坐标 */
 	xwayland_x11_to_logical(&geo, c->xwayland_scale);
+	if (c->scene)
+		mango_error(true, WLR_DEBUG,
+					"xwayland setgeo: class=%s title=%s unmanaged=%d "
+					"floating=%d xwm=%dx%d@%d,%d scene=%d,%d -> %d,%d",
+					client_get_appid(c), client_get_title(c),
+					client_is_unmanaged(c), c->isfloating, geo.width,
+					geo.height, geo.x, geo.y,
+					(int32_t)roundf(c->scene->node.x),
+					(int32_t)roundf(c->scene->node.y), geo.x, geo.y);
+	/* 平铺/布局管理的窗口由 arrange 决定位置，客户端自移动不应干扰布局；
+	 * 仅浮动（含未管理）窗口跟随客户端位置，保证渲染与输入一致。 */
+	if (!c->scene || (!client_is_unmanaged(c) && !c->isfloating))
+		return;
 	wlr_scene_node_set_position(&c->scene->node, geo.x, geo.y);
-	motionnotify(0, NULL, 0, 0, 0, 0);
+}
+
+/* XWayland 的 X 服务器按自身的 X11 窗口堆叠顺序分发指针点击，
+ * 合成器必须在把某个 X11 窗口提升到场景顶层时同步提升其 X11 堆叠，
+ * 否则弹窗虽画在顶层，点击却会被 X 服务器路由到其下方更大的窗口
+ * （如 JDownloader 主窗口），表现为“弹窗不能点击/点击穿透”。
+ */
+static void xwayland_restack_top(Client *c) {
+	if (!c || !client_is_x11(c) || client_is_unmanaged(c) || !c->surface.xwayland)
+		return;
+	wlr_xwayland_surface_restack(c->surface.xwayland, NULL, XCB_STACK_MODE_ABOVE);
+	if (c->scene)
+		mango_error(true, WLR_DEBUG,
+					"xwayland restack: class=%s title=%s win=%u",
+					client_get_appid(c), client_get_title(c),
+					c->surface.xwayland->window_id);
 }
 #endif
 
