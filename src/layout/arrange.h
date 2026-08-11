@@ -1038,7 +1038,7 @@ void resize_tile_reallyfair(Client *grabc, bool isdrag, int32_t offsetx,
 			sign_y = 1.0f;
 		} else if (my_r == rows - 1) {
 			adj_r = rows - 2;
-			sign_y = -1.0f;
+			sign_y = isdrag ? -1.0f : 1.0f;
 		} else if (isdrag) {
 			if (grabc->cursor_in_upper_half) {
 				adj_r = my_r - 1;
@@ -1098,7 +1098,7 @@ void resize_tile_reallyfair(Client *grabc, bool isdrag, int32_t offsetx,
 				sign_x = 1.0f;
 			} else if (grabc->grid_col_idx == max_c) {
 				adj_c = max_c - 1;
-				sign_x = -1.0f;
+				sign_x = isdrag ? -1.0f : 1.0f;
 			} else if (isdrag) {
 				if (grabc->cursor_in_left_half) {
 					adj_c = grabc->grid_col_idx - 1;
